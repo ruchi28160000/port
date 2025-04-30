@@ -1,0 +1,232 @@
+EmailVerificationController.cs
+
+using Microsoft.AspNetCore.Mvc;
+using PortfolioTrackerApi.Models;
+using PortfolioTrackerApi.Services;
+using System;
+using System.Threading.Tasks;
+
+namespace PortfolioTrackerApi.Controllers
+{
+    [ApiController]
+    [Route("api/[controller]")]
+    public class EmailVerificationController : ControllerBase
+    {
+        private readonly IEmailVerificationService _emailVerificationService;
+
+        public EmailVerificationController(IEmailVerificationService emailVerificationService)
+        {
+            _emailVerificationService = emailVerificationService;
+        }
+
+        [HttpPost("send")]
+        public async Task<IActionResult> SendVerificationCode([FromBody] EmailRequest request)
+        {
+            try
+            {
+                await _emailVerificationService.SendVerificationCode(request.Email);
+                return Ok($"Verification code sent to {request.Email}");
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(ex.Message);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, $"Error sending email: {ex.Message}");
+            }
+        }
+
+        [HttpPost("verify")]
+        public IActionResult VerifyCode([FromBody] VerificationRequest request)
+        {
+            var result = _emailVerificationService.VerifyCode(request.Email, request.Code);
+            if (result)
+                return Ok("Email verified successfully.");
+            else
+                return BadRequest("Invalid verification code or email.");
+        }
+    }
+}
+
+Emailrequest.cs
+
+namespace PortfolioTrackerApi.Models
+{
+    public class EmailRequest
+    {
+        public string Email { get; set; }
+    }
+}
+
+
+VerificationRequest.cs
+
+namespace PortfolioTrackerApi.Models
+{
+    public class VerificationRequest
+    {
+        public string Email { get; set; }
+        public string Code { get; set; }
+    }
+}
+
+
+EmailVerificationService.cs
+
+using System;
+using System.Collections.Concurrent;
+using System.Net.Mail;
+using System.Threading.Tasks;
+using SendGrid;
+using SendGrid.Helpers.Mail;
+
+namespace PortfolioTrackerApi.Services
+{
+    public class EmailVerificationService : IEmailVerificationService
+    {
+        private readonly ConcurrentDictionary<string, VerificationEntry> _verificationCodes = new();
+        private readonly TimeSpan _codeExpiration = TimeSpan.FromMinutes(5); // 5 minutes
+
+        public async Task SendVerificationCode(string email)
+        {
+            if (!IsValidEmail(email))
+                throw new ArgumentException("Invalid email address.");
+
+            var code = new Random().Next(100000, 999999).ToString();
+
+            var entry = new VerificationEntry
+            {
+                Code = code,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            _verificationCodes[email] = entry;
+
+            await SendEmail(email, code);
+
+            Console.WriteLine($"[Email to {email}]: Your verification code is {code}");
+        }
+
+        public bool VerifyCode(string email, string code)
+        {
+            if (_verificationCodes.TryGetValue(email, out var entry))
+            {
+                if (DateTime.UtcNow - entry.CreatedAt > _codeExpiration)
+                {
+                    _verificationCodes.TryRemove(email, out _);
+                    return false; 
+                }
+
+                if (entry.Code == code)
+                {
+                    _verificationCodes.TryRemove(email, out _);
+                    return true; 
+                }
+            }
+            return false;
+        }
+
+        private bool IsValidEmail(string email)
+        {
+            try
+            {
+                var addr = new MailAddress(email);
+                return addr.Address == email;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private async Task SendEmail(string toEmail, string code)
+        {
+            var apiKey = "; 
+            var client = new SendGridClient(apiKey);
+            var from = new EmailAddress("fintrackblr@gmail.com", "FinTrack"); 
+            var subject = "Your FinTrack Verification Code";
+            var to = new EmailAddress(toEmail);
+            var plainTextContent =
+                $"Hi Investor,\n\n" +
+                "Welcome to FinTrack - Where Finance Meets Clarity.\n" +
+                $"Your verification code is : {code}.\n" +
+                "(This code is valid for 5 minutes.)\n\n" +
+                "Please use this code to complete your verification.\n\n" +
+                "Stay on top of your finances,\n" +
+                "The FinTrack Team";
+            var htmlContent =
+                $"<p style='color:#000000;'>Hi Investor,</p>" +
+                $"<p style='color:#000000;'><strong>Welcome to FinTrack - Where Finance Meets Clarity.</strong></p>" +
+                $"<p style='color:#000000;'>Your verification code is : <strong>{code}.</strong><br><span style='color:#000000;'>(This code is valid for 5 minutes.)</p>" +
+                $"<p style='color:#000000;'>Please use this code to complete your verification.</p>" +
+                $"<p style='color:#000000;'>Stay on top of your finances,<br>The FinTrack Team</p>";
+            var msg = MailHelper.CreateSingleEmail(from, to, subject, plainTextContent, htmlContent);
+            var response = await client.SendEmailAsync(msg);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorBody = await response.Body.ReadAsStringAsync();
+                throw new Exception($"Failed to send email: {errorBody}");
+            }
+        }
+
+        private class VerificationEntry
+        {
+            public string Code { get; set; }
+            public DateTime CreatedAt { get; set; }
+        }
+    }
+}
+
+IEmailVerificationService.cs
+
+using System.Threading.Tasks;
+
+namespace PortfolioTrackerApi.Services
+{
+    public interface IEmailVerificationService
+    {
+        Task SendVerificationCode(string email); 
+        bool VerifyCode(string email, string code);
+    }
+}
+
+Program.cs
+
+using PortfolioTrackerApi.Services;
+ 
+var builder = WebApplication.CreateBuilder(args);
+ 
+
+builder.Services.AddControllers();
+ 
+
+builder.Services.AddSingleton<IEmailVerificationService, EmailVerificationService>();
+
+builder.Services.AddCors();
+ 
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+ 
+var app = builder.Build();
+ 
+
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+ 
+
+app.UseCors(policy =>
+    policy.WithOrigins("http://localhost:4200")
+          .AllowAnyHeader()
+          .AllowAnyMethod());
+ 
+app.UseHttpsRedirection();
+app.UseAuthorization();
+app.MapControllers();
+ 
+app.Run();
+ 
